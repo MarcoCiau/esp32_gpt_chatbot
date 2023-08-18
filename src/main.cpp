@@ -1,11 +1,11 @@
 #include <WiFi.h>
-#include <HTTPClient.h>
+#include <WiFiClientSecure.h>
 #include <ArduinoJson.h>
 #include "credentials.h"
-HTTPClient http;
-String assistantMsg = "actúa como un asistente amable";
+WiFiClientSecure httpClient;
 void connectToWiFi();
-String getChatGptResponse(String userMessage);
+bool sendHTTPRequest(String prompt, String * result);
+String getChatGptResponse(String userMessage, bool parseMsg = true);
 void setup() {
     Serial.begin(115200);
     connectToWiFi();
@@ -35,38 +35,79 @@ void connectToWiFi()
     Serial.println("Conexión WiFi exitosa");
 }
 
-String getChatGptResponse(String userMessage) {
-    if (WiFi.status() != WL_CONNECTED) return "ERROR: Dispositivo no connectado a WiFi";
+bool sendHTTPRequest(String prompt, String * result)
+{
+    if (WiFi.status() != WL_CONNECTED)
+    {
+        Serial.println("ERROR: Dispositivo no connectado a WiFi");
+        return false;
+    }
+    
     //Connect to OpenAI API URL
-    if (!http.begin(apiURL)) {
-        return "Error al conectar con API OpenAI";
+    httpClient.setInsecure();
+    if (!httpClient.connect(host, httpsPort)) {
+        Serial.println("Error al conectar con API OpenAI");
+        return false;
     }
     //Build Payload
-    /*
-    Assistant messages store previous assistant responses, but can also be written by you to give examples of desired behavior.
-    Including conversation history is important when user instructions refer to prior messages.
-    */ 
-    String assistantMsgJSON = "{\"role\": \"assistant\", \"content\": \"" + assistantMsg + "\"}";
-    // String payload = "{\"model\": \"gpt-3.5-turbo\",\"messages\": [" + assistantMsgJSON + ",{\"role\": \"user\", \"content\": \"" + userMessage + "\"}]}";
-    String payload = "{\"model\": \"gpt-3.5-turbo\",\"messages\": ["+ assistantMsgJSON + ",{\"role\": \"user\", \"content\": \"" + userMessage + "\"}]}";
+    String payload = "{\"model\": \"gpt-3.5-turbo\",\"messages\": [{\"role\": \"user\", \"content\": \"" + prompt + "\"}]}";
     Serial.println(payload);
-    //Build HTTP Requests
-    http.addHeader("Content-Type", "application/json");
-    http.addHeader("Authorization", "Bearer " + String(api_key));
-    //Get OpenAI Response
-    int httpResponseCode = http.POST(payload);
-    if (httpResponseCode == 200) {
-        String response = http.getString();
-        Serial.println(response);
-        const uint16_t responseLength = response.length();
-        // Parse JSON response
-        DynamicJsonDocument jsonDoc(responseLength + 200);
-        deserializeJson(jsonDoc, response);
-        String outputText = jsonDoc["choices"][0]["message"]["content"];
-        outputText.remove(outputText.indexOf('\n'));
-        assistantMsg = outputText;
-        return outputText;
+
+    //Build HTTP Request
+    String request = "POST /v1/chat/completions HTTP/1.1\r\n";
+    request += "Host: "+ String(host) +"\r\n";
+    request += "Authorization: Bearer " + String(api_key) + "\r\n";
+    request += "Content-Type: application/json\r\n";
+    request += "Content-Length: " + String(payload.length()) + "\r\n";
+    request += "Connection: close\r\n";
+    request += "\r\n" + payload + "\r\n";
+    // Send HTTP Request
+    httpClient.print(request);
+
+    // Get Response 
+    String response = "";
+    while (httpClient.connected()) {
+      if (httpClient.available()) {
+        response += httpClient.readStringUntil('\n');
+        response += String("\r\n");
+      }
     }
-    Serial.println(http.getString());
-    return String("La petición ha fallado. Code: %d" + String(httpResponseCode));
+    httpClient.stop();
+
+    // Parse HTTP Response Code
+    int responseCode = 0;
+    if (response.indexOf(" ") != -1) {                                                                        // If the first space is found
+      responseCode = response.substring(response.indexOf(" ") + 1, response.indexOf(" ") + 4).toInt();  // Get the characters following the first space and convert to integer
+    }
+
+    if (responseCode != 200) {
+      Serial.println("La petición ha fallado. Info:" + String(response));
+      return false;
+    }
+
+    // Get JSON Body
+    int start = response.indexOf("{");
+    int end = response.lastIndexOf("}");
+    String jsonBody = response.substring(start, end + 1);
+
+    if (jsonBody.length() > 0) {
+        *result = jsonBody;
+        return true;
+    }
+    Serial.println("Error: no se ha podido leer la información");
+    return false;
+}
+
+String getChatGptResponse(String userMessage, bool parseMsg) {
+    String resultStr;
+    bool result = sendHTTPRequest(userMessage, &resultStr);
+    if (!result) return "Error : sendHTTPRequest";
+    if (!parseMsg) return resultStr;
+    DynamicJsonDocument doc(resultStr.length() + 200);
+      DeserializationError error = deserializeJson(doc, resultStr.c_str());
+      if (error) {
+        return "[ERR] deserializeJson() failed: " + String(error.f_str());
+      }
+      const char* _content = doc["choices"][0]["message"]["content"];
+      return String(_content);
 }
