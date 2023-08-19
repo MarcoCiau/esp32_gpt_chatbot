@@ -3,5 +3,6 @@
 const char* ssid = "";
 const char* password = "";
 const char* api_key = "";
-const char* apiURL = "https://api.openai.com/v1/chat/completions";
+const char* host = "api.openai.com";
+const int httpsPort = 443;
 #endif //CREDENTIALS_H
